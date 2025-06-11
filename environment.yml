@@ -16,6 +16,9 @@ dependencies:
       - einops
       - imageio
       - matplotlib
+      - sympy
+      - ipykernel
+      - ipython-autotime
       # - submodules/simple-knn
       # Instad, do: pip install git+https://github.com/camenduru/simple-knn
       # Or: pip install submodules/simple-knn
