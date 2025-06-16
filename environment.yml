@@ -9,14 +9,16 @@ dependencies:
   - pytorch
   - pytorch-cuda
   - pip
-  - torchaudio
-  - torchvision
+  # - torchaudio
+  # - torchvision
+  #  - pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
   - pip:
       - accelerate
       - einops
       - imageio
       - matplotlib
       - sympy
+      - ipywidgets
       - ipykernel
       - ipython-autotime
       # - submodules/simple-knn
