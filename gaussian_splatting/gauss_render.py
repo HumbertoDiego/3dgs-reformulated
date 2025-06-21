@@ -118,8 +118,7 @@ def projection_ndc(points, viewmatrix, projmatrix):
     p_w = 1.0 / (points_h[..., -1:] + 0.000001)
     p_proj = points_h * p_w
     p_view = points_o @ viewmatrix
-    in_mask = p_view[..., 2] >= 0.2
-    return p_proj, p_view, in_mask
+    return p_proj, p_view
 
 
 @torch.no_grad()
@@ -155,12 +154,12 @@ class GaussRenderer(nn.Module):
     >>> out = gaussRender(pc=gaussModel, camera=camera)
     """
 
-    def __init__(self, active_sh_degree=3, white_bkgd=True, **kwargs):
+    def __init__(self, active_sh_degree=3, white_bkgd=True, width=256, height=256, **kwargs):
         super(GaussRenderer, self).__init__()
         self.active_sh_degree = active_sh_degree
         self.debug = False
         self.white_bkgd = white_bkgd
-        self.pix_coord = torch.stack(torch.meshgrid(torch.arange(256), torch.arange(256), indexing='xy'), dim=-1).to('cuda')
+        self.pix_coord = torch.stack(torch.meshgrid(torch.arange(height), torch.arange(width), indexing='xy'), dim=-1).to('cuda')
         
     
     def build_color(self, means3D, shs, camera):
@@ -173,24 +172,26 @@ class GaussRenderer(nn.Module):
     def render(self, camera, means2D, cov2d, color, opacity, depths, scales):
         radii = get_radius(cov2d)
         rect = get_rect(means2D, radii, width=camera.image_width, height=camera.image_height)
-        
+        # print("pix_coord shape", self.pix_coord.shape)
         self.render_color = torch.ones(*self.pix_coord.shape[:2], 3).to('cuda')
         self.render_depth = torch.zeros(*self.pix_coord.shape[:2], 1).to('cuda')
         self.render_alpha = torch.zeros(*self.pix_coord.shape[:2], 1).to('cuda')
 
-        TILE_SIZE = 64
+        TILE_SIZE = 16
         for h in range(0, camera.image_height, TILE_SIZE):
             for w in range(0, camera.image_width, TILE_SIZE):
                 # check if the rectangle penetrate the tile
                 over_tl = rect[0][..., 0].clip(min=w), rect[0][..., 1].clip(min=h)
                 over_br = rect[1][..., 0].clip(max=w+TILE_SIZE-1), rect[1][..., 1].clip(max=h+TILE_SIZE-1)
                 in_mask = (over_br[0] > over_tl[0]) & (over_br[1] > over_tl[1]) # 3D gaussian in the tile 
-                
                 if not in_mask.sum() > 0:
                     continue
 
                 P = in_mask.sum()
-                tile_coord = self.pix_coord[h:h+TILE_SIZE, w:w+TILE_SIZE].flatten(0,-2)
+                right_limit = camera.image_width if w+TILE_SIZE>camera.image_width else w+TILE_SIZE
+                bottom_limit = camera.image_height if h+TILE_SIZE>camera.image_height else h+TILE_SIZE
+
+                tile_coord = self.pix_coord[h:bottom_limit, w:right_limit].flatten(0,-2)
                 sorted_depths, index = torch.sort(depths[in_mask])
                 sorted_means2D = means2D[in_mask][index]
                 sorted_cov2d = cov2d[in_mask][index] # P 2 2
@@ -216,9 +217,9 @@ class GaussRenderer(nn.Module):
                 acc_alpha = (alpha * T).sum(dim=1)
                 tile_color = (T * alpha * sorted_color[None]).sum(dim=1) + (1-acc_alpha) * (1 if self.white_bkgd else 0)
                 tile_depth = ((T * alpha) * sorted_depths[None,:,None]).sum(dim=1)
-                self.render_color[h:h+TILE_SIZE, w:w+TILE_SIZE] = tile_color.reshape(TILE_SIZE, TILE_SIZE, -1)
-                self.render_depth[h:h+TILE_SIZE, w:w+TILE_SIZE] = tile_depth.reshape(TILE_SIZE, TILE_SIZE, -1)
-                self.render_alpha[h:h+TILE_SIZE, w:w+TILE_SIZE] = acc_alpha.reshape(TILE_SIZE, TILE_SIZE, -1)
+                self.render_color[h:bottom_limit, w:right_limit] = tile_color.reshape(bottom_limit-h, right_limit-w, -1)
+                self.render_depth[h:bottom_limit, w:right_limit] = tile_depth.reshape(bottom_limit-h, right_limit-w, -1)
+                self.render_alpha[h:bottom_limit, w:right_limit] = acc_alpha.reshape(bottom_limit-h, right_limit-w, -1)
 
         return {
             "render": self.render_color,
@@ -242,11 +243,9 @@ class GaussRenderer(nn.Module):
             prof = contextlib.nullcontext
             
         with prof("projection"):
-            mean_ndc, mean_view, in_mask = projection_ndc(means3D, 
-                    viewmatrix=camera.world_view_transform, 
-                    projmatrix=camera.projection_matrix)
-            mean_ndc = mean_ndc[in_mask]
-            mean_view = mean_view[in_mask]
+            mean_ndc, mean_view = projection_ndc(means3D, 
+                                    viewmatrix=camera.world_view_transform, 
+                                    projmatrix=camera.projection_matrix)
             depths = mean_view[:,2]
         
         with prof("build color"):
@@ -268,7 +267,7 @@ class GaussRenderer(nn.Module):
             mean_coord_x = ((mean_ndc[..., 0] + 1) * camera.image_width - 1.0) * 0.5
             mean_coord_y = ((mean_ndc[..., 1] + 1) * camera.image_height - 1.0) * 0.5
             means2D = torch.stack([mean_coord_x, mean_coord_y], dim=-1)
-        
+
         with prof("render"):
             rets = self.render(
                 camera = camera, 

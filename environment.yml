@@ -21,6 +21,7 @@ dependencies:
       - ipywidgets
       - ipykernel
       - ipython-autotime
+      - plyfile
       # - submodules/simple-knn
       # Instad, do: pip install git+https://github.com/camenduru/simple-knn
       # Or: pip install submodules/simple-knn

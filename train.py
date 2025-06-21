@@ -1,9 +1,11 @@
 import torch
+from argparse import ArgumentParser
 import numpy as np
 import gaussian_splatting.utils as utils
 from gaussian_splatting.trainer import Trainer
 import gaussian_splatting.utils.loss_utils as loss_utils
 from gaussian_splatting.utils.data_utils import read_all
+from gaussian_splatting.utils.colmap_utils import  read_all_colmap, get_point_clouds_colmap
 from gaussian_splatting.utils.camera_utils import to_viewpoint_camera
 from gaussian_splatting.utils.point_utils import get_point_clouds
 from gaussian_splatting.gauss_model import GaussModel
@@ -30,6 +32,7 @@ class GSSTrainer(Trainer):
         rgb = self.data['rgb'][ind]
         depth = self.data['depth'][ind]
         mask = (self.data['alpha'][ind] > 0.5)
+
         if USE_GPU_PYTORCH:
             camera = to_viewpoint_camera(camera)
 
@@ -68,7 +71,7 @@ class GSSTrainer(Trainer):
         depth_pd = out['depth'].detach().cpu().numpy()[..., 0]
         depth = self.data['depth'][ind].detach().cpu().numpy()
         depth = np.concatenate([depth, depth_pd], axis=1)
-        depth = (1 - depth / depth.max())
+        depth = (1 - depth / (depth.max() + 10e-6))
         depth = plt.get_cmap('jet')(depth)[..., :3]
         image = np.concatenate([rgb, rgb_pd], axis=1)
         image = np.concatenate([image, depth], axis=0)
@@ -77,28 +80,41 @@ class GSSTrainer(Trainer):
 
 if __name__ == "__main__":
     device = 'cuda'
-    folder = './B075X65R3X'
-    data = read_all(folder, resize_factor=0.5)
-    data = {k: v.to(device) for k, v in data.items()}
-    data['depth_range'] = torch.Tensor([[1,3]]*len(data['rgb'])).to(device)
+    parser = ArgumentParser(description="Training script parameters")
+    parser.add_argument('--folder', type=str, default="./aparecida/undistorted")
+    parser.add_argument('--input_type', 
+                    default='colmap', 
+                    const='colmap', 
+                    nargs='?', 
+                    choices=['blender', 'colmap'], 
+                    help='dataset input types supported (default: %(default)s)')
+    args = parser.parse_args()
+    if args.input_type=='blender':
+        data = read_all(args.folder, resize_factor=0.5)
+        data = {k: v.to(device) for k, v in data.items()}
+        data['depth_range'] = torch.Tensor([[1,3]]*len(data['rgb'])).to(device)
+        points = get_point_clouds(data['camera'], data['depth'], data['alpha'], data['rgb'])
+    elif args.input_type=='colmap':
+        data = read_all_colmap(args.folder)
+        data = {k: v.to(device) for k, v in data.items()}
+        data['depth_range'] = torch.Tensor([[1,3]]*len(data['rgb'])).to(device)
+        points = get_point_clouds_colmap(args.folder)
 
-
-    points = get_point_clouds(data['camera'], data['depth'], data['alpha'], data['rgb'])
     raw_points = points.random_sample(2**14)
-    # raw_points.write_ply(open('points.ply', 'wb'))
-
     gaussModel = GaussModel(sh_degree=4, debug=False)
     gaussModel.create_from_pcd(pcd=raw_points)
     
     render_kwargs = {
         'white_bkgd': True,
+        'width': data['rgb'].shape[1],
+        'height': data['rgb'].shape[2] 
     }
 
     trainer = GSSTrainer(model=gaussModel, 
         data=data,
         train_batch_size=1, 
-        train_num_steps=25000,
-        i_image =100,
+        # train_num_steps=25000,
+        # i_image =100,
         train_lr=1e-3, 
         amp=False,
         fp16=False,
@@ -108,3 +124,5 @@ if __name__ == "__main__":
 
     trainer.on_evaluate_step()
     trainer.train()
+
+    # !python train.py --folder "../data/aparecida/undistorted" --input_type "colmap" 
